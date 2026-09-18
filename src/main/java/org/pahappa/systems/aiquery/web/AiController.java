@@ -1,6 +1,7 @@
 package org.pahappa.systems.aiquery.web;
 
 
+import org.pahappa.systems.aiquery.agent.AgenticQueryOrchestrator;
 import org.pahappa.systems.aiquery.client.AiChatClient;
 import org.pahappa.systems.aiquery.config.AiQueryProperties;
 import org.pahappa.systems.aiquery.dto.AskRequest;
@@ -35,14 +36,16 @@ public class AiController {
     private final AiChatClient aiChatClient;
     private final AiQueryProperties aiQueryProperties;
     private final QueryResultSynthesizer resultSynthesizer;
+    private final AgenticQueryOrchestrator agenticQueryOrchestrator;
 
     @Autowired
     public AiController(AiQueryService aiQueryService, AiChatClient aiChatClient, AiQueryProperties aiQueryProperties,
-                         QueryResultSynthesizer resultSynthesizer) {
+                         QueryResultSynthesizer resultSynthesizer, AgenticQueryOrchestrator agenticQueryOrchestrator) {
         this.aiQueryService = aiQueryService;
         this.aiChatClient = aiChatClient;
         this.aiQueryProperties = aiQueryProperties;
         this.resultSynthesizer = resultSynthesizer;
+        this.agenticQueryOrchestrator = agenticQueryOrchestrator;
     }
 
     @RequestMapping( value = "/ai-query/ask", method = RequestMethod.POST  )
@@ -52,7 +55,9 @@ public class AiController {
         String question = request.getQuestion();
 
         try {
-            QueryResult result = aiQueryService.queryFromNaturalLanguage(user, question);
+            QueryResult result = aiQueryProperties.isAgentEnabled()
+                    ? agenticQueryOrchestrator.run(user, question).result()
+                    : aiQueryService.queryFromNaturalLanguage(user, question);
             String answer = resultSynthesizer.synthesize(question, result);
             return new ResponseEntity<Object>(new AskResponse(answer, result), HttpStatus.OK);
         } catch (AiQueryAuthorizationException e) {

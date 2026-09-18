@@ -5,11 +5,7 @@ import org.pahappa.systems.aiquery.client.AiChatClient;
 import org.pahappa.systems.aiquery.config.AiQueryProperties;
 import org.pahappa.systems.aiquery.dto.TranslatedQueryRequest;
 import org.pahappa.systems.aiquery.exception.AiQueryValidationException;
-import org.pahappa.systems.aiquery.metadata.AiEntityMetadataService;
 import org.pahappa.systems.aiquery.metadata.ResolvedEntity;
-import org.pahappa.systems.aiquery.metadata.ResolvedField;
-import org.pahappa.systems.aiquery.metadata.ResolvedRelation;
-import org.pahappa.systems.aiquery.security.AiDatabaseAuthorizationService;
 import org.sers.webutils.model.security.User;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,7 +14,6 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 
@@ -98,30 +93,27 @@ public class NaturalLanguageQueryTranslator {
             "entities (greetings, small talk, or anything unrelated to this application's data), respond " +
             "with an empty array []. No markdown fences, no commentary.";
 
-    private final AiEntityMetadataService metadataService;
-    private final AiDatabaseAuthorizationService authorizationService;
     private final AiChatClient aiChatClient;
     private final AiQueryProperties properties;
     private final TranslatedQueryRequestParser requestParser;
+    private final AiQuerySchemaDescriber schemaDescriber;
 
     @Autowired
-    public NaturalLanguageQueryTranslator(AiEntityMetadataService metadataService,
-                                           AiDatabaseAuthorizationService authorizationService,
-                                           AiChatClient aiChatClient,
+    public NaturalLanguageQueryTranslator(AiChatClient aiChatClient,
                                            AiQueryProperties properties,
-                                           TranslatedQueryRequestParser requestParser) {
-        this.metadataService = metadataService;
-        this.authorizationService = authorizationService;
+                                           TranslatedQueryRequestParser requestParser,
+                                           AiQuerySchemaDescriber schemaDescriber) {
         this.aiChatClient = aiChatClient;
         this.properties = properties;
         this.requestParser = requestParser;
+        this.schemaDescriber = schemaDescriber;
     }
 
     public TranslatedQueryRequest translate(User user, String naturalLanguageQuery) {
         if (naturalLanguageQuery == null || naturalLanguageQuery.trim().isEmpty()) {
             throw new AiQueryValidationException("A question is required.");
         }
-        List<ResolvedEntity> accessibleEntities = listAccessibleEntities(user);
+        List<ResolvedEntity> accessibleEntities = schemaDescriber.listAccessibleEntities(user);
         if (accessibleEntities.isEmpty()) {
             throw new AiQueryValidationException("No queryable data is available for this user.");
         }
@@ -136,7 +128,7 @@ public class NaturalLanguageQueryTranslator {
             }
         }
 
-        String schema = describeSchema(user, candidateEntities);
+        String schema = schemaDescriber.describeSchema(user, candidateEntities);
         if (schema.isEmpty()) {
             throw new AiQueryValidationException("The question could not be matched to any queryable data.");
         }
@@ -158,27 +150,6 @@ public class NaturalLanguageQueryTranslator {
         }
 
         return translated;
-    }
-
-    /** Entities the user can see at all, i.e. accessible with at least one accessible field. */
-    private List<ResolvedEntity> listAccessibleEntities(User user) {
-        List<ResolvedEntity> accessible = new ArrayList<ResolvedEntity>();
-        for (ResolvedEntity entity : metadataService.listEntities()) {
-            if (!authorizationService.canAccessEntity(user, entity.getEntityName())) {
-                continue;
-            }
-            boolean hasAccessibleField = false;
-            for (ResolvedField field : entity.getAllFields()) {
-                if (authorizationService.canAccessField(user, entity.getEntityName(), field.getName())) {
-                    hasAccessibleField = true;
-                    break;
-                }
-            }
-            if (hasAccessibleField) {
-                accessible.add(entity);
-            }
-        }
-        return accessible;
     }
 
     /**
@@ -264,55 +235,6 @@ public class NaturalLanguageQueryTranslator {
             }
         }
         return matched;
-    }
-
-    private String describeSchema(User user, List<ResolvedEntity> entities) {
-        StringBuilder schema = new StringBuilder();
-        for (ResolvedEntity entity : entities) {
-            StringBuilder fieldsLine = new StringBuilder();
-            appendFields(user, entity, entity.getAllFields(), null, fieldsLine);
-            for (ResolvedRelation relation : entity.getAllRelations()) {
-                if (!authorizationService.canAccessField(user, entity.getEntityName(), relation.getName())) {
-                    continue;
-                }
-                ResolvedEntity targetEntity = relation.getTargetEntity();
-                appendFields(user, targetEntity, targetEntity.getAllFields(), relation.getName(), fieldsLine);
-            }
-            if (fieldsLine.length() == 0) {
-                continue;
-            }
-            schema.append("Entity ").append(entity.getEntityName()).append(": ").append(fieldsLine).append("\n");
-        }
-        return schema.toString();
-    }
-
-    /** Appends "name:Type" (or "prefix.name:Type") entries for every field the user can access. */
-    private void appendFields(User user, ResolvedEntity fieldOwner, Collection<ResolvedField> fields, String prefix,
-                               StringBuilder fieldsLine) {
-        for (ResolvedField field : fields) {
-            if (!authorizationService.canAccessField(user, fieldOwner.getEntityName(), field.getName())) {
-                continue;
-            }
-            if (fieldsLine.length() > 0) {
-                fieldsLine.append(", ");
-            }
-            String qualifiedName = prefix == null ? field.getName() : prefix + "." + field.getName();
-            fieldsLine.append(qualifiedName).append(":").append(field.getJavaType().getSimpleName());
-            if (!field.getAllowedValues().isEmpty()) {
-                fieldsLine.append("[").append(joinWithPipe(field.getAllowedValues())).append("]");
-            }
-        }
-    }
-
-    private String joinWithPipe(List<String> values) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < values.size(); i++) {
-            if (i > 0) {
-                sb.append("|");
-            }
-            sb.append(values.get(i));
-        }
-        return sb.toString();
     }
 
 }

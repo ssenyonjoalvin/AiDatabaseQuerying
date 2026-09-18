@@ -1,16 +1,8 @@
 package org.pahappa.systems.aiquery.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.pahappa.systems.aiquery.client.AiChatClient;
 import org.pahappa.systems.aiquery.config.AiQueryProperties;
-import org.pahappa.systems.aiquery.dto.AggregationFunction;
-import org.pahappa.systems.aiquery.dto.AggregationRequest;
-import org.pahappa.systems.aiquery.dto.FilterCriterion;
-import org.pahappa.systems.aiquery.dto.FilterGroup;
-import org.pahappa.systems.aiquery.dto.FilterOperator;
-import org.pahappa.systems.aiquery.dto.SortCriterion;
-import org.pahappa.systems.aiquery.dto.SortDirection;
 import org.pahappa.systems.aiquery.dto.TranslatedQueryRequest;
 import org.pahappa.systems.aiquery.exception.AiQueryValidationException;
 import org.pahappa.systems.aiquery.metadata.AiEntityMetadataService;
@@ -29,7 +21,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * Translates a natural-language question into a {@link TranslatedQueryRequest} by describing
@@ -111,17 +102,19 @@ public class NaturalLanguageQueryTranslator {
     private final AiDatabaseAuthorizationService authorizationService;
     private final AiChatClient aiChatClient;
     private final AiQueryProperties properties;
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final TranslatedQueryRequestParser requestParser;
 
     @Autowired
     public NaturalLanguageQueryTranslator(AiEntityMetadataService metadataService,
                                            AiDatabaseAuthorizationService authorizationService,
                                            AiChatClient aiChatClient,
-                                           AiQueryProperties properties) {
+                                           AiQueryProperties properties,
+                                           TranslatedQueryRequestParser requestParser) {
         this.metadataService = metadataService;
         this.authorizationService = authorizationService;
         this.aiChatClient = aiChatClient;
         this.properties = properties;
+        this.requestParser = requestParser;
     }
 
     public TranslatedQueryRequest translate(User user, String naturalLanguageQuery) {
@@ -157,23 +150,14 @@ public class NaturalLanguageQueryTranslator {
 
         String raw = aiChatClient.generate(systemPrompt, naturalLanguageQuery);
         LOGGER.debug("Model raw response for question '{}': {}", naturalLanguageQuery, raw);
-        JsonNode root = parseJson(raw);
+        TranslatedQueryRequest translated = requestParser.parseRequest(raw);
 
-        String entityName = textOrNull(root.path("entity"));
-        if (entityName == null) {
+        if (translated.entityName() == null) {
             LOGGER.warn("Model could not match question '{}' to any entity. Raw response: {}", naturalLanguageQuery, raw);
             throw new AiQueryValidationException("The question could not be matched to any queryable data.");
         }
 
-        return new TranslatedQueryRequest(
-                entityName,
-                readFieldList(root.path("fields")),
-                readFilters(root.path("filters")),
-                readFilterGroups(root.path("filterGroups")),
-                readSort(root.path("sort")),
-                readInteger(root.path("page")),
-                readInteger(root.path("pageSize")),
-                readAggregation(root.path("aggregation")));
+        return translated;
     }
 
     /** Entities the user can see at all, i.e. accessible with at least one accessible field. */
@@ -213,8 +197,8 @@ public class NaturalLanguageQueryTranslator {
 
         List<String> selectedNames;
         try {
-            JsonNode root = parseJson(raw);
-            selectedNames = readFieldList(root);
+            JsonNode root = requestParser.parseJson(raw);
+            selectedNames = requestParser.readStringList(root);
         } catch (Exception ex) {
             LOGGER.warn("Could not parse entity-linking response for question '{}': {}", naturalLanguageQuery, raw);
             return Collections.emptyList();
@@ -331,144 +315,4 @@ public class NaturalLanguageQueryTranslator {
         return sb.toString();
     }
 
-    private JsonNode parseJson(String raw) {
-        String cleaned = stripMarkdownFence(raw);
-        try {
-            return mapper.readTree(cleaned);
-        } catch (Exception ex) {
-            throw new AiQueryValidationException("The question could not be understood; please rephrase it.");
-        }
-    }
-
-    private String stripMarkdownFence(String raw) {
-        String text = raw == null ? "" : raw.trim();
-        if (text.startsWith("```")) {
-            int firstNewline = text.indexOf('\n');
-            int lastFence = text.lastIndexOf("```");
-            if (firstNewline > 0 && lastFence > firstNewline) {
-                text = text.substring(firstNewline + 1, lastFence).trim();
-            }
-        }
-        return text;
-    }
-
-    private List<String> readFieldList(JsonNode node) {
-        if (!node.isArray()) {
-            return null;
-        }
-        List<String> fields = new ArrayList<String>();
-        for (JsonNode item : node) {
-            fields.add(item.asText());
-        }
-        return fields;
-    }
-
-    private List<FilterCriterion> readFilters(JsonNode node) {
-        List<FilterCriterion> filters = new ArrayList<FilterCriterion>();
-        if (!node.isArray()) {
-            return filters;
-        }
-        for (JsonNode item : node) {
-            String field = textOrNull(item.path("field"));
-            FilterOperator operator = enumOrNull(FilterOperator.class, item.path("operator"));
-            if (field == null || operator == null) {
-                continue;
-            }
-            filters.add(new FilterCriterion(field, operator, readValue(item.path("value"))));
-        }
-        return filters;
-    }
-
-    private List<FilterGroup> readFilterGroups(JsonNode node) {
-        List<FilterGroup> groups = new ArrayList<FilterGroup>();
-        if (!node.isArray()) {
-            return groups;
-        }
-        for (JsonNode groupNode : node) {
-            List<FilterCriterion> anyOf = readFilters(groupNode);
-            if (!anyOf.isEmpty()) {
-                groups.add(new FilterGroup(anyOf));
-            }
-        }
-        return groups;
-    }
-
-    private List<SortCriterion> readSort(JsonNode node) {
-        List<SortCriterion> sorts = new ArrayList<SortCriterion>();
-        if (!node.isArray()) {
-            return sorts;
-        }
-        for (JsonNode item : node) {
-            String field = textOrNull(item.path("field"));
-            SortDirection direction = enumOrNull(SortDirection.class, item.path("direction"));
-            if (field == null || direction == null) {
-                continue;
-            }
-            sorts.add(new SortCriterion(field, direction));
-        }
-        return sorts;
-    }
-
-    private AggregationRequest readAggregation(JsonNode node) {
-        if (node == null || node.isMissingNode() || node.isNull()) {
-            return null;
-        }
-        AggregationFunction function = enumOrNull(AggregationFunction.class, node.path("function"));
-        if (function == null) {
-            return null;
-        }
-        String field = textOrNull(node.path("field"));
-        List<String> groupBy = readFieldList(node.path("groupBy"));
-        String asPercentageOf = textOrNull(node.path("asPercentageOf"));
-        String subtractField = textOrNull(node.path("subtractField"));
-        String durationStartField = textOrNull(node.path("durationStartField"));
-        String durationEndField = textOrNull(node.path("durationEndField"));
-        String durationUnit = textOrNull(node.path("durationUnit"));
-        return new AggregationRequest(function, field, groupBy, asPercentageOf, subtractField,
-                durationStartField, durationEndField, durationUnit);
-    }
-
-    private Object readValue(JsonNode node) {
-        if (node == null || node.isMissingNode() || node.isNull()) {
-            return null;
-        }
-        if (node.isArray()) {
-            List<Object> values = new ArrayList<Object>();
-            for (JsonNode item : node) {
-                values.add(scalar(item));
-            }
-            return values;
-        }
-        return scalar(node);
-    }
-
-    private Object scalar(JsonNode node) {
-        if (node.isNumber()) {
-            return node.numberValue();
-        }
-        if (node.isBoolean()) {
-            return node.booleanValue();
-        }
-        return node.asText();
-    }
-
-    private Integer readInteger(JsonNode node) {
-        return node.isInt() ? node.intValue() : null;
-    }
-
-    private String textOrNull(JsonNode node) {
-        return (node == null || node.isMissingNode() || node.isNull()) ? null : node.asText();
-    }
-
-    private <E extends Enum<E>> E enumOrNull(Class<E> type, JsonNode node) {
-        String text = textOrNull(node);
-        if (text == null) {
-            return null;
-        }
-        try {
-            return Enum.valueOf(type, text.trim().toUpperCase(Locale.ROOT));
-        } catch (IllegalArgumentException ex) {
-            return null;
-        }
-    }
 }

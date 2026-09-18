@@ -101,8 +101,12 @@ public class AiQueryValidator {
                     + entity.getEntityName() + "' is not permitted.");
         }
         ResolvedEntity targetEntity = relation.getTargetEntity();
+        // Named by the relation, never by targetEntity.getEntityName(): the schema shown to the
+        // caller only ever lists "relation.field", never the target entity's own catalog name, so
+        // echoing that name back here on a bad field guess would disclose it even when the target
+        // entity isn't independently accessible (or listed) to this caller at all.
         ResolvedField targetField = targetEntity.getField(targetFieldName)
-                .orElseThrow(new FieldNotFoundSupplier(targetFieldName, targetEntity.getEntityName()));
+                .orElseThrow(new RelationFieldNotFoundSupplier(targetFieldName, relationName));
         if (!authorizationService.canAccessField(user, targetEntity.getEntityName(), targetField.getName())) {
             throw new AiQueryAuthorizationException("Access to field '" + targetField.getName() + "' on entity '"
                     + targetEntity.getEntityName() + "' is not permitted.");
@@ -451,6 +455,22 @@ public class AiQueryValidator {
         public AiQueryValidationException get() {
             return new AiQueryValidationException(
                     "Unknown relationship '" + relationName + "' on entity '" + entityName + "'.");
+        }
+    }
+
+    private static final class RelationFieldNotFoundSupplier implements java.util.function.Supplier<AiQueryValidationException> {
+        private final String fieldName;
+        private final String relationName;
+
+        RelationFieldNotFoundSupplier(String fieldName, String relationName) {
+            this.fieldName = fieldName;
+            this.relationName = relationName;
+        }
+
+        @Override
+        public AiQueryValidationException get() {
+            return new AiQueryValidationException(
+                    "Field '" + fieldName + "' is not queryable via relationship '" + relationName + "'.");
         }
     }
 

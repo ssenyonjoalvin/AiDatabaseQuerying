@@ -52,7 +52,12 @@ public class QueryDbTool {
         return new ToolDefinition(NAME, DESCRIPTION, parametersSchema());
     }
 
-    public ToolExecutionResult execute(User user, String argumentsJson) {
+    /**
+     * @param requestId correlates this call's audit row with every other {@code query_db} call
+     * made for the same user question -- the caller (the agentic loop) generates one id per
+     * question and passes it to every execution within that question's iteration budget.
+     */
+    public ToolExecutionResult execute(User user, String argumentsJson, String requestId) {
         TranslatedQueryRequest plan;
         try {
             plan = requestParser.parseRequest(argumentsJson);
@@ -62,7 +67,7 @@ public class QueryDbTool {
 
         try {
             QueryResult result = aiQueryService.queryEntity(user, plan.entityName(), plan.fields(), plan.filters(),
-                    plan.filterGroups(), plan.sort(), plan.page(), plan.pageSize(), plan.aggregation());
+                    plan.filterGroups(), plan.sort(), plan.page(), plan.pageSize(), plan.aggregation(), requestId);
             return ToolExecutionResult.success(plan, result, describeResult(result));
         } catch (AiQueryAuthorizationException ex) {
             // Deliberately generic: never echo back which entity/field access was denied for.

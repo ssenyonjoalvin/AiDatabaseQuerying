@@ -19,6 +19,7 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Runs the iterative "question -> call query_db -> see rows -> maybe call again -> answer" loop:
@@ -86,6 +87,11 @@ public class AgenticQueryOrchestrator {
         messages.add(ChatMessage.system(systemPrompt));
         messages.add(ChatMessage.user(naturalLanguageQuery));
 
+        // Shared by every query_db execution for this one question, so its audit rows can be
+        // correlated as belonging to a single user question rather than looking like several
+        // unrelated ones.
+        String requestId = UUID.randomUUID().toString();
+
         int executedCount = 0;
         ToolExecutionResult lastSuccess = null;
         boolean capExhausted = false;
@@ -112,7 +118,7 @@ public class AgenticQueryOrchestrator {
                     break;
                 }
                 executedCount++;
-                ToolExecutionResult toolResult = queryDbTool.execute(user, toolCall.argumentsJson());
+                ToolExecutionResult toolResult = queryDbTool.execute(user, toolCall.argumentsJson(), requestId);
                 messages.add(ChatMessage.tool(toolCall.id(), toolResult.toolMessageContent()));
                 if (toolResult.success()) {
                     lastSuccess = toolResult;

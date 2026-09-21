@@ -1,14 +1,18 @@
 package org.pahappa.systems.aiquery.config;
 
 import org.sers.webutils.server.core.utils.PropertyPlaceHolderConfigurer;
-
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+import org.springframework.core.PriorityOrdered;
+import org.springframework.stereotype.Component;
 
 /**
  * Resolves the {@code ${ai.*}} placeholders consumed by
  * {@link org.pahappa.systems.aiquery.client.AiChatClient}. Component-scanning this package (see
  * {@link AiQueryProperties}) picks this class up automatically.
+ *
+ * <p>Registered as a {@link org.springframework.beans.factory.config.BeanFactoryPostProcessor}
+ * (via {@link PropertyPlaceHolderConfigurer}) so placeholders are applied before {@code @Value}
+ * injection on AI beans. A {@code @Configuration} {@code @Bean} factory is too late when the host
+ * application discovers components through webutils' dynamic classpath scan.
  *
  * <p>Two sources are checked, so the same key/secret doesn't need to be duplicated into every
  * host application's own classpath:
@@ -26,16 +30,18 @@ import org.springframework.context.annotation.Configuration;
  * already supply {@code ai.api-key} some other way (their own placeholder configurer, environment,
  * etc.) are unaffected either way.
  */
-@Configuration
-public class AiQueryModelConfig {
+@Component
+public class AiQueryModelConfig extends PropertyPlaceHolderConfigurer implements PriorityOrdered {
 
-    @Bean
-    public static PropertyPlaceHolderConfigurer aiPropertyPlaceholderConfigurer() {
-        PropertyPlaceHolderConfigurer configurer = new PropertyPlaceHolderConfigurer();
-        configurer.setClassPathPropertiesFilename("ai.local.properties");
-        configurer.setEnvironmentVariable("AI_PROPERTIES_FILE");
-        configurer.setIgnoreResourceNotFound(true);
-        configurer.setIgnoreUnresolvablePlaceholders(true);
-        return configurer;
+    public AiQueryModelConfig() {
+        setClassPathPropertiesFilename("ai.local.properties");
+        setEnvironmentVariable("AI_PROPERTIES_FILE");
+        setIgnoreResourceNotFound(true);
+        setIgnoreUnresolvablePlaceholders(true);
+    }
+
+    @Override
+    public int getOrder() {
+        return HIGHEST_PRECEDENCE;
     }
 }

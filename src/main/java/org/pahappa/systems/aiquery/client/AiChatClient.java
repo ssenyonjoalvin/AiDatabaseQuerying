@@ -18,6 +18,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import javax.annotation.PreDestroy;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -121,13 +122,69 @@ public class AiChatClient {
             body.set("messages", toMessagesNode(messages));
             if (tools != null && !tools.isEmpty()) {
                 body.set("tools", toToolsNode(tools));
+                body.put("tool_choice", "auto");
             }
 
-            JsonNode root = post(body);
-            return toChatCompletionResult(root.path("choices").path(0).path("message"));
+            try {
+                JsonNode root = post(body);
+                return toChatCompletionResult(root.path("choices").path(0).path("message"));
+            } catch (ChatCompletionsHttpException httpException) {
+                ChatCompletionResult recovered = recoverPlainTextFinalTurn(httpException, body);
+                if (recovered != null) {
+                    return recovered;
+                }
+                throw httpException;
+            }
+        } catch (ChatCompletionsHttpException httpException) {
+            throw new IllegalStateException("Failed to call chat completions API: " + httpException.getMessage(), httpException);
         } catch (Exception exception) {
             throw new IllegalStateException("Failed to call chat completions API: " + exception.getMessage(), exception);
         }
+    }
+
+    /**
+     * Some OpenAI-compatible providers (notably Groq {@code gpt-oss} models) reject a plain-text
+     * assistant turn with HTTP 400 {@code output_parse_failed} when {@code tools} are still
+     * attached, even though the model correctly decided it is done calling tools. Retry once
+     * without tools, then salvage {@code failed_generation} from the error body if present.
+     */
+    private ChatCompletionResult recoverPlainTextFinalTurn(ChatCompletionsHttpException httpException, ObjectNode body)
+            throws Exception {
+        if (httpException.status != 400 || !httpException.responseBody.contains("output_parse_failed")) {
+            return null;
+        }
+        if (body.has("tools")) {
+            body.remove("tools");
+            body.remove("tool_choice");
+            try {
+                JsonNode root = post(body);
+                return toChatCompletionResult(root.path("choices").path(0).path("message"));
+            } catch (ChatCompletionsHttpException retryException) {
+                if (retryException.status != 400 || !retryException.responseBody.contains("output_parse_failed")) {
+                    throw retryException;
+                }
+                return salvageFailedGeneration(retryException.responseBody);
+            }
+        }
+        return salvageFailedGeneration(httpException.responseBody);
+    }
+
+    private ChatCompletionResult salvageFailedGeneration(String responseBody) {
+        try {
+            JsonNode errorNode = mapper.readTree(responseBody).path("error");
+            if (!"output_parse_failed".equals(errorNode.path("code").asText())) {
+                return null;
+            }
+            JsonNode failedNode = errorNode.path("failed_generation");
+            String failedGeneration = failedNode.isMissingNode() || failedNode.isNull()
+                    ? null : failedNode.asText();
+            if (failedGeneration != null && !failedGeneration.trim().isEmpty()) {
+                return new ChatCompletionResult(failedGeneration, Collections.<ToolCall>emptyList());
+            }
+        } catch (Exception ignored) {
+            // not JSON or unexpected shape
+        }
+        return new ChatCompletionResult(null, Collections.<ToolCall>emptyList());
     }
 
     private ArrayNode toMessagesNode(List<ChatMessage> messages) {
@@ -201,7 +258,7 @@ public class AiChatClient {
                     continue;
                 }
                 if (status != 200) {
-                    throw new IllegalStateException("Chat completions API returned " + status + ": " + responseBody);
+                    throw new ChatCompletionsHttpException(status, responseBody);
                 }
                 return mapper.readTree(responseBody);
             } finally {
@@ -241,6 +298,17 @@ public class AiChatClient {
             throw new IllegalStateException(
                     "Missing required property " + property + ". Set it in ai.local.properties "
                             + "(or wherever this host application supplies " + property + ").");
+        }
+    }
+
+    private static final class ChatCompletionsHttpException extends Exception {
+        private final int status;
+        private final String responseBody;
+
+        private ChatCompletionsHttpException(int status, String responseBody) {
+            super("Chat completions API returned " + status + ": " + responseBody);
+            this.status = status;
+            this.responseBody = responseBody;
         }
     }
 

@@ -163,6 +163,15 @@ public class AiQueryServiceImpl implements AiQueryService {
                                     List<FilterCriterion> filters, List<FilterGroup> filterGroups,
                                     List<SortCriterion> sort,
                                     Integer page, Integer pageSize, AggregationRequest aggregation) {
+        return queryEntity(user, entityName, fields, filters, filterGroups, sort, page, pageSize, aggregation,
+                java.util.UUID.randomUUID().toString());
+    }
+
+    @Transactional(readOnly = true)
+    public QueryResult queryEntity(User user, String entityName, List<String> fields,
+                                    List<FilterCriterion> filters, List<FilterGroup> filterGroups,
+                                    List<SortCriterion> sort,
+                                    Integer page, Integer pageSize, AggregationRequest aggregation, String requestId) {
         long start = System.nanoTime();
         try {
             ValidatedQuery validated = validator.validateQuery(user, entityName, fields, filters, filterGroups,
@@ -194,15 +203,16 @@ public class AiQueryServiceImpl implements AiQueryService {
                     result.hasMore(),
                     aggregation);
 
-            auditLogger.logQuerySuccess(user, validated.entity().getEntityName(), outputFields, filters, filterGroups,
-                    sort, validated.page(), validated.pageSize(), aggregation, result.rows().size(), durationMs(start));
+            auditLogger.logQuerySuccess(requestId, user, validated.entity().getEntityName(), outputFields, filters,
+                    filterGroups, sort, validated.page(), validated.pageSize(), aggregation, result.rows().size(),
+                    durationMs(start));
             return queryResult;
         } catch (AiQueryValidationException ex) {
-            auditLogger.logFailure(user, entityName, "QUERY", "VALIDATION", durationMs(start));
+            auditLogger.logFailure(requestId, user, entityName, "QUERY", "VALIDATION", durationMs(start));
             throw ex;
         } catch (RuntimeException ex) {
             LOGGER.error("Unexpected error executing AI query for entity '{}'", entityName, ex);
-            auditLogger.logFailure(user, entityName, "QUERY", "EXECUTION", durationMs(start));
+            auditLogger.logFailure(requestId, user, entityName, "QUERY", "EXECUTION", durationMs(start));
             throw new AiQueryExecutionException("The query could not be completed. Please adjust the request and try again.");
         }
     }

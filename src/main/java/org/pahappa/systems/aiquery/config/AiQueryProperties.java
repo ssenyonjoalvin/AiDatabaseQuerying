@@ -78,6 +78,20 @@ public class AiQueryProperties {
             "You are a helpful assistant for this application. The user asked a question that " +
             "isn't a database query -- answer it directly and helpfully in plain text.";
 
+    /**
+     * Master switch for the agentic (tool-calling) query loop. When {@code false}, {@code
+     * AiController} falls back to the single-shot {@code NaturalLanguageQueryTranslator} path
+     * exactly as before -- lets a host turn the loop off in production without a redeploy.
+     */
+    private boolean agentEnabled = true;
+
+    /**
+     * Hard ceiling on the number of {@code query_db} tool executions the agentic loop will run
+     * for one question, enforced in Java rather than trusted to the model. On exhaustion, the
+     * loop answers from its last successful result rather than looping further.
+     */
+    private int agentMaxIterations = 3;
+
     public int getDefaultPageSize() {
         return defaultPageSize;
     }
@@ -172,5 +186,21 @@ public class AiQueryProperties {
 
     public void setResultSynthesisSystemPrompt(String resultSynthesisSystemPrompt) {
         this.resultSynthesisSystemPrompt = resultSynthesisSystemPrompt;
+    }
+
+    public boolean isAgentEnabled() {
+        return agentEnabled;
+    }
+
+    public void setAgentEnabled(boolean agentEnabled) {
+        this.agentEnabled = agentEnabled;
+    }
+
+    public int getAgentMaxIterations() {
+        return agentMaxIterations;
+    }
+
+    public void setAgentMaxIterations(int agentMaxIterations) {
+        this.agentMaxIterations = agentMaxIterations;
     }
 }

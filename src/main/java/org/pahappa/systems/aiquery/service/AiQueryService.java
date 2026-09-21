@@ -48,4 +48,23 @@ public interface AiQueryService {
             Integer pageSize,
             AggregationRequest aggregation
     );
+
+    /**
+     * Same as the {@code requestId}-less overload above, except every audit row this call
+     * produces is tagged with the given {@code requestId} instead of a freshly generated one --
+     * lets a caller that issues several queries for one user question (e.g. the agentic loop, one
+     * call per tool execution) correlate their audit rows as belonging to that one question.
+     */
+    QueryResult queryEntity(
+            User user,
+            String entityName,
+            List<String> fields,
+            List<FilterCriterion> filters,
+            List<FilterGroup> filterGroups,
+            List<SortCriterion> sort,
+            Integer page,
+            Integer pageSize,
+            AggregationRequest aggregation,
+            String requestId
+    );
 }

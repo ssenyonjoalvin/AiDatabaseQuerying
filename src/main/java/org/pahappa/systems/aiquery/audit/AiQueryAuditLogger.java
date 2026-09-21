@@ -33,19 +33,28 @@ public class AiQueryAuditLogger {
                 new Object[]{username(user), entity, fieldCount});
     }
 
-    public void logQuerySuccess(User user, String entity, List<String> fields, List<FilterCriterion> filters,
-                                 List<SortCriterion> sort, int page, int pageSize, AggregationRequest aggregation,
-                                 int resultCount, long durationMs) {
-        logQuerySuccess(user, entity, fields, filters, Collections.<FilterGroup>emptyList(), sort, page, pageSize,
-                aggregation, resultCount, durationMs);
+    public void logQuerySuccess(String requestId, User user, String entity, List<String> fields,
+                                 List<FilterCriterion> filters, List<SortCriterion> sort, int page, int pageSize,
+                                 AggregationRequest aggregation, int resultCount, long durationMs) {
+        logQuerySuccess(requestId, user, entity, fields, filters, Collections.<FilterGroup>emptyList(), sort, page,
+                pageSize, aggregation, resultCount, durationMs);
     }
 
-    public void logQuerySuccess(User user, String entity, List<String> fields, List<FilterCriterion> filters,
-                                 List<FilterGroup> filterGroups, List<SortCriterion> sort, int page, int pageSize,
-                                 AggregationRequest aggregation, int resultCount, long durationMs) {
-        AUDIT_LOG.info("user={} entity={} operation=QUERY outcome=SUCCESS fields={} filterFields={} filterCount={} " +
-                        "filterGroupCount={} sortFields={} page={} pageSize={} aggregation={} resultCount={} durationMs={}",
-                new Object[]{username(user), entity, fields, fieldNames(filters, new FieldNameExtractor<FilterCriterion>() {
+    /**
+     * {@code requestId} correlates every row logged for one user question: the agentic loop can
+     * run up to several of these per question (one per {@code query_db} tool call), and without a
+     * shared id they'd be indistinguishable in the log from unrelated separate questions by the
+     * same user.
+     */
+    public void logQuerySuccess(String requestId, User user, String entity, List<String> fields,
+                                 List<FilterCriterion> filters, List<FilterGroup> filterGroups,
+                                 List<SortCriterion> sort, int page, int pageSize, AggregationRequest aggregation,
+                                 int resultCount, long durationMs) {
+        AUDIT_LOG.info("requestId={} user={} entity={} operation=QUERY outcome=SUCCESS fields={} filterFields={} " +
+                        "filterCount={} filterGroupCount={} sortFields={} page={} pageSize={} aggregation={} " +
+                        "resultCount={} durationMs={}",
+                new Object[]{requestId, username(user), entity, fields,
+                        fieldNames(filters, new FieldNameExtractor<FilterCriterion>() {
                     public String extract(FilterCriterion item) {
                         return item.field();
                     }
@@ -57,9 +66,9 @@ public class AiQueryAuditLogger {
                         }), page, pageSize, describeAggregation(aggregation), resultCount, durationMs});
     }
 
-    public void logFailure(User user, String entity, String operation, String phase, long durationMs) {
-        AUDIT_LOG.warn("user={} entity={} operation={} outcome=FAILURE phase={} durationMs={}",
-                new Object[]{username(user), entity, operation, phase, durationMs});
+    public void logFailure(String requestId, User user, String entity, String operation, String phase, long durationMs) {
+        AUDIT_LOG.warn("requestId={} user={} entity={} operation={} outcome=FAILURE phase={} durationMs={}",
+                new Object[]{requestId, username(user), entity, operation, phase, durationMs});
     }
 
     private String username(User user) {

@@ -17,6 +17,9 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import javax.annotation.PreDestroy;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * Generation via any OpenAI-compatible chat/completions API (Alibaba DashScope/Qwen,
@@ -102,6 +105,143 @@ public class AiChatClient {
     }
 
 
+    /**
+     * Answers a question given a full conversation history and an optional set of tools the
+     * model may call instead of answering directly. Non-streaming, same OpenAI-compatible
+     * {@code /chat/completions} endpoint and 429-retry behavior as {@link #generate}. The caller
+     * owns the message list -- nothing here remembers state between calls -- and is responsible
+     * for appending the returned assistant turn (and any {@code role: "tool"} results) before
+     * calling again.
+     */
+    public ChatCompletionResult generateWithTools(List<ChatMessage> messages, List<ToolDefinition> tools) {
+        requireConfigured();
+        requireValue(model, "ai.model");
+        try {
+            ObjectNode body = mapper.createObjectNode();
+            body.put("model", model);
+            body.set("messages", toMessagesNode(messages));
+            if (tools != null && !tools.isEmpty()) {
+                body.set("tools", toToolsNode(tools));
+                body.put("tool_choice", "auto");
+            }
+
+            try {
+                JsonNode root = post(body);
+                return toChatCompletionResult(root.path("choices").path(0).path("message"));
+            } catch (ChatCompletionsHttpException httpException) {
+                ChatCompletionResult recovered = recoverPlainTextFinalTurn(httpException, body);
+                if (recovered != null) {
+                    return recovered;
+                }
+                throw httpException;
+            }
+        } catch (ChatCompletionsHttpException httpException) {
+            throw new IllegalStateException("Failed to call chat completions API: " + httpException.getMessage(), httpException);
+        } catch (Exception exception) {
+            throw new IllegalStateException("Failed to call chat completions API: " + exception.getMessage(), exception);
+        }
+    }
+
+    /**
+     * Some OpenAI-compatible providers (notably Groq {@code gpt-oss} models) reject a plain-text
+     * assistant turn with HTTP 400 {@code output_parse_failed} when {@code tools} are still
+     * attached, even though the model correctly decided it is done calling tools. Retry once
+     * without tools, then salvage {@code failed_generation} from the error body if present.
+     */
+    private ChatCompletionResult recoverPlainTextFinalTurn(ChatCompletionsHttpException httpException, ObjectNode body)
+            throws Exception {
+        if (httpException.status != 400 || !httpException.responseBody.contains("output_parse_failed")) {
+            return null;
+        }
+        if (body.has("tools")) {
+            body.remove("tools");
+            body.remove("tool_choice");
+            try {
+                JsonNode root = post(body);
+                return toChatCompletionResult(root.path("choices").path(0).path("message"));
+            } catch (ChatCompletionsHttpException retryException) {
+                if (retryException.status != 400 || !retryException.responseBody.contains("output_parse_failed")) {
+                    throw retryException;
+                }
+                return salvageFailedGeneration(retryException.responseBody);
+            }
+        }
+        return salvageFailedGeneration(httpException.responseBody);
+    }
+
+    private ChatCompletionResult salvageFailedGeneration(String responseBody) {
+        try {
+            JsonNode errorNode = mapper.readTree(responseBody).path("error");
+            if (!"output_parse_failed".equals(errorNode.path("code").asText())) {
+                return null;
+            }
+            JsonNode failedNode = errorNode.path("failed_generation");
+            String failedGeneration = failedNode.isMissingNode() || failedNode.isNull()
+                    ? null : failedNode.asText();
+            if (failedGeneration != null && !failedGeneration.trim().isEmpty()) {
+                return new ChatCompletionResult(failedGeneration, Collections.<ToolCall>emptyList());
+            }
+        } catch (Exception ignored) {
+            // not JSON or unexpected shape
+        }
+        return new ChatCompletionResult(null, Collections.<ToolCall>emptyList());
+    }
+
+    private ArrayNode toMessagesNode(List<ChatMessage> messages) {
+        ArrayNode messagesNode = mapper.createArrayNode();
+        for (ChatMessage message : messages) {
+            ObjectNode messageNode = messagesNode.addObject();
+            messageNode.put("role", message.role());
+            if (message.content() != null) {
+                messageNode.put("content", message.content());
+            } else {
+                messageNode.putNull("content");
+            }
+            if (message.toolCallId() != null) {
+                messageNode.put("tool_call_id", message.toolCallId());
+            }
+            if (!message.toolCalls().isEmpty()) {
+                ArrayNode toolCallsNode = messageNode.putArray("tool_calls");
+                for (ToolCall toolCall : message.toolCalls()) {
+                    ObjectNode toolCallNode = toolCallsNode.addObject();
+                    toolCallNode.put("id", toolCall.id());
+                    toolCallNode.put("type", "function");
+                    ObjectNode functionNode = toolCallNode.putObject("function");
+                    functionNode.put("name", toolCall.functionName());
+                    functionNode.put("arguments", toolCall.argumentsJson());
+                }
+            }
+        }
+        return messagesNode;
+    }
+
+    private ArrayNode toToolsNode(List<ToolDefinition> tools) {
+        ArrayNode toolsNode = mapper.createArrayNode();
+        for (ToolDefinition tool : tools) {
+            ObjectNode toolNode = toolsNode.addObject();
+            toolNode.put("type", "function");
+            ObjectNode functionNode = toolNode.putObject("function");
+            functionNode.put("name", tool.name());
+            functionNode.put("description", tool.description());
+            functionNode.set("parameters", tool.parametersSchema());
+        }
+        return toolsNode;
+    }
+
+    private ChatCompletionResult toChatCompletionResult(JsonNode messageNode) {
+        String content = messageNode.path("content").isMissingNode() || messageNode.path("content").isNull()
+                ? null : messageNode.path("content").asText();
+        List<ToolCall> toolCalls = new ArrayList<ToolCall>();
+        for (JsonNode toolCallNode : messageNode.path("tool_calls")) {
+            JsonNode functionNode = toolCallNode.path("function");
+            toolCalls.add(new ToolCall(
+                    toolCallNode.path("id").asText(),
+                    functionNode.path("name").asText(),
+                    functionNode.path("arguments").asText()));
+        }
+        return new ChatCompletionResult(content, toolCalls);
+    }
+
     private JsonNode post(ObjectNode body) throws Exception {
         String json = mapper.writeValueAsString(body);
         for (int attempt = 0; ; attempt++) {
@@ -118,7 +258,7 @@ public class AiChatClient {
                     continue;
                 }
                 if (status != 200) {
-                    throw new IllegalStateException("Chat completions API returned " + status + ": " + responseBody);
+                    throw new ChatCompletionsHttpException(status, responseBody);
                 }
                 return mapper.readTree(responseBody);
             } finally {
@@ -158,6 +298,17 @@ public class AiChatClient {
             throw new IllegalStateException(
                     "Missing required property " + property + ". Set it in ai.local.properties "
                             + "(or wherever this host application supplies " + property + ").");
+        }
+    }
+
+    private static final class ChatCompletionsHttpException extends Exception {
+        private final int status;
+        private final String responseBody;
+
+        private ChatCompletionsHttpException(int status, String responseBody) {
+            super("Chat completions API returned " + status + ": " + responseBody);
+            this.status = status;
+            this.responseBody = responseBody;
         }
     }
 
